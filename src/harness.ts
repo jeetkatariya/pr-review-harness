@@ -1,5 +1,5 @@
 import { fetchPRDiff, postComment } from "./github.js";
-import { runReviewer } from "./agents/reviewer.js";
+import { runReviewer, MODEL } from "./agents/reviewer.js";
 import type { PRJob, PRDiff } from "./types.js";
 
 // GUARDRAILS — hard limits checked before any processing
@@ -18,9 +18,6 @@ function checkGuardrails(diff: PRDiff): { pass: boolean; reason?: string } {
   return { pass: true };
 }
 
-// Phase 1 orchestrator — no agents yet.
-// Fetches the diff, runs guardrails, logs everything, posts a confirmation comment.
-// Phase 2 will replace the log + comment with real agent analysis.
 export async function processReview(job: PRJob): Promise<void> {
   const start = Date.now();
   console.log(`\n[harness] starting review — ${job.repo} PR #${job.prNumber}`);
@@ -49,7 +46,7 @@ export async function processReview(job: PRJob): Promise<void> {
     }
 
     // Step 4: run the AI reviewer agent
-    console.log(`\n[harness] running reviewer agent (model: ${process.env.ANTHROPIC_MODEL ?? "claude-haiku-4-5-20251001"})...`);
+    console.log(`\n[harness] running reviewer agent (model: ${MODEL})...`);
     const review = await runReviewer(diff);
     console.log(`[harness] review complete`);
 

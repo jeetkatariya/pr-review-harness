@@ -1,8 +1,43 @@
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import type { PRDiff } from "../types.js";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-haiku-4-5-20251001";
+// ─── Provider config ────────────────────────────────────────────────────────
+
+const PROVIDER = process.env.PROVIDER ?? "openrouter";
+
+// Free models tried in order — falls back on 429 or any error
+const OPENROUTER_FALLBACK_CHAIN = [
+  "minimax/minimax-m2.5:free",
+  "deepseek/deepseek-v4-flash:free",
+  "openai/gpt-oss-120b:free",
+  "qwen/qwen3-coder:free",
+];
+
+if (PROVIDER === "anthropic" && !process.env.ANTHROPIC_API_KEY) {
+  throw new Error("[reviewer] ANTHROPIC_API_KEY is required when PROVIDER=anthropic");
+}
+if (PROVIDER === "openrouter" && !process.env.OPENROUTER_API_KEY) {
+  throw new Error("[reviewer] OPENROUTER_API_KEY is required when PROVIDER=openrouter");
+}
+
+const anthropicClient = PROVIDER === "anthropic"
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+
+const openrouterClient = PROVIDER === "openrouter"
+  ? new OpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: process.env.OPENROUTER_API_KEY,
+    })
+  : null;
+
+export const MODEL =
+  PROVIDER === "anthropic"
+    ? (process.env.ANTHROPIC_MODEL ?? "claude-haiku-4-5-20251001")
+    : (process.env.OPENROUTER_MODEL ?? OPENROUTER_FALLBACK_CHAIN[0]);
+
+// ─── System prompt ──────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a senior staff software engineer performing a thorough pull request code review. Your goal is to find real, actionable issues — not to generate noise.
 
@@ -55,6 +90,8 @@ Answer all four questions:
 
 If any answer is no or unsure: downgrade severity or drop the finding. Only report findings you are >80% confident are real issues.
 
+If you raise a finding and then upon re-examination determine it is a false positive, DO NOT delete it. Instead, mark it as withdrawn and move it to the "Withdrawn findings" section at the bottom with a brief reason.
+
 ---
 
 ## What NOT to flag
@@ -76,31 +113,105 @@ If any answer is no or unsure: downgrade severity or drop the finding. Only repo
 
 Start with a one-paragraph summary of what the PR does and your overall impression.
 
-Then list each finding using this exact structure:
+Then list each confirmed finding using this exact collapsible structure:
 
----
-**[SEVERITY] Title of finding**
+<details>
+<summary>[SEVERITY EMOJI] [SEVERITY] — [Title of finding]</summary>
+
 - **File:** \`filename:line\`
 - **Finding:** One sentence, no hedging language ("may", "could", "might" are banned).
-- **Evidence:** Paste the exact code excerpt from the diff.
+- **Evidence:**
+\`\`\`
+paste the exact code excerpt from the diff here
+\`\`\`
 - **Remediation:** Specific fix, with a code snippet where helpful.
----
 
-After all findings, end with:
+</details>
+
+After all confirmed findings, add the verdict:
 
 **Verdict:** APPROVE | APPROVE_WITH_COMMENTS | BLOCK
 **Finding counts:** 🔴 N critical · 🟡 N high · 🟠 N medium · 🔵 N low · ⚪ N nits
 
-If there are no blocking issues, lead the verdict section with: **No blocking issues found.**
-If everything found is nits only, say that explicitly.
-A clean review with no findings is a valid and valuable review — do not invent issues to seem thorough.`;
+If there are no blocking issues, lead with: **No blocking issues found.**
+A clean review with no findings is valid — do not invent issues to seem thorough.
+
+Finally, if you withdrew any findings during your review, include them at the very bottom in this collapsible section:
+
+<details>
+<summary>🔍 Withdrawn findings (self-identified false positives)</summary>
+
+For each withdrawn finding:
+**[SEVERITY EMOJI] [SEVERITY] — [Title] — withdrawn**
+Reason: [one sentence explaining why it was withdrawn after re-examination]
+
+</details>
+
+Only include the withdrawn section if there are actually withdrawn findings. Omit it entirely if there are none.`;
+
+// ─── Provider call with fallback ────────────────────────────────────────────
+
+async function callWithFallback(userMessage: string): Promise<{ text: string; modelUsed: string }> {
+  if (PROVIDER === "anthropic") {
+    const response = await anthropicClient!.messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userMessage }],
+    });
+    const text = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    if (!text.trim()) {
+      throw new Error(`Anthropic returned no text. Stop reason: ${response.stop_reason}`);
+    }
+    return { text, modelUsed: MODEL };
+  }
+
+  // OpenRouter — try each model in the fallback chain
+  const chain = process.env.OPENROUTER_MODEL
+    ? [process.env.OPENROUTER_MODEL]
+    : OPENROUTER_FALLBACK_CHAIN;
+
+  let lastError: Error = new Error("All OpenRouter fallback models failed");
+
+  for (const model of chain) {
+    try {
+      console.log(`[reviewer] trying model: ${model}`);
+      const response = await openrouterClient!.chat.completions.create({
+        model,
+        max_tokens: 2048,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userMessage },
+        ],
+      });
+      const text = response.choices[0]?.message?.content ?? "";
+      if (!text.trim()) {
+        throw new Error(`Model ${model} returned empty response`);
+      }
+      return { text, modelUsed: model };
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      const message = (err as Error).message ?? String(err);
+      console.warn(`[reviewer] ${model} failed (${status ?? "error"}): ${message} — trying next`);
+      lastError = err as Error;
+    }
+  }
+
+  throw lastError;
+}
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 export type ReviewResult = {
   summary: string;
   body: string;
 };
 
-// Strip files that are noise: lockfiles, generated files, minified assets
+// ─── File filter ─────────────────────────────────────────────────────────────
+
 function shouldSkipFile(filename: string): boolean {
   const skipPatterns = [
     /package-lock\.json$/,
@@ -115,6 +226,8 @@ function shouldSkipFile(filename: string): boolean {
   ];
   return skipPatterns.some((p) => p.test(filename));
 }
+
+// ─── Main entry point ─────────────────────────────────────────────────────────
 
 export async function runReviewer(diff: PRDiff): Promise<ReviewResult> {
   const reviewableFiles = diff.files.filter((f) => !shouldSkipFile(f.filename));
@@ -144,20 +257,10 @@ ${skippedNote}
 
 ${filesSummary}`;
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userMessage }],
-  });
-
-  const text = response.content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  const { text, modelUsed } = await callWithFallback(userMessage);
 
   return {
-    summary: `Reviewed by \`${MODEL}\` — ${reviewableFiles.length} files (+${diff.totalAdditions}/-${diff.totalDeletions} lines)${skippedCount > 0 ? `, ${skippedCount} skipped` : ""}`,
+    summary: `Reviewed by \`${modelUsed}\` (${PROVIDER}) — ${reviewableFiles.length} files (+${diff.totalAdditions}/-${diff.totalDeletions} lines)${skippedCount > 0 ? `, ${skippedCount} skipped` : ""}`,
     body: text,
   };
 }
