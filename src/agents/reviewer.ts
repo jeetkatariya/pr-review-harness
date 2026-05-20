@@ -133,7 +133,13 @@ After all confirmed findings, add the verdict:
 **Verdict:** APPROVE | APPROVE_WITH_COMMENTS | BLOCK
 **Finding counts:** 🔴 N critical · 🟡 N high · 🟠 N medium · 🔵 N low · ⚪ N nits
 
-If there are no blocking issues, lead with: **No blocking issues found.**
+If there are no blocking issues, lead the verdict section with a short, genuine positive statement. Examples:
+- "Clean diff — no security vulnerabilities, logic bugs, or error handling gaps found."
+- "Solid work. The error handling is thorough and no security issues were identified."
+- "No issues worth blocking this for. The code is clear and the approach is sound."
+
+Keep it honest and specific to what you actually checked — don't be generic. One sentence max.
+
 A clean review with no findings is valid — do not invent issues to seem thorough.
 
 Finally, if you withdrew any findings during your review, include them at the very bottom in this collapsible section:
