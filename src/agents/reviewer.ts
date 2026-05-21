@@ -106,6 +106,7 @@ If you raise a finding and then upon re-examination determine it is a false posi
 - "Consider using X instead" without a concrete failure mode
 - Missing comments or JSDoc (never above LOW severity)
 - Refactoring suggestions unrelated to the change
+- Module-level environment variable validation that throws on missing keys — this is intentional fail-fast behavior. The server is supposed to refuse to start with a clear error rather than silently accepting requests it cannot fulfill.
 
 ---
 
