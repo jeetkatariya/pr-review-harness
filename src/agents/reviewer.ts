@@ -9,7 +9,7 @@ const PROVIDER = process.env.PROVIDER ?? "openrouter";
 // Free models tried in order — falls back on 429 or any error
 const OPENROUTER_FALLBACK_CHAIN = [
   "minimax/minimax-m2.5:free",
-  "deepseek/deepseek-v4-flash:free",
+  // "deepseek/deepseek-v4-flash:free",
   "openai/gpt-oss-120b:free",
   "qwen/qwen3-coder:free",
 ];
